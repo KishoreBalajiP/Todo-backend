@@ -8,7 +8,13 @@ connectDB();
 
 const app = express();
 
-app.use(cors());
+// Allow everything (*)
+app.use(cors({
+  origin: "*",
+  methods: "*",
+  allowedHeaders: "*"
+}));
+
 app.use(express.json());
 
 // test route 
