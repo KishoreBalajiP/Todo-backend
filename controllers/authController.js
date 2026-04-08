@@ -2,6 +2,18 @@ const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
+// detect production environment
+const isProd = process.env.NODE_ENV === "production";
+
+// shared cookie config
+const cookieOptions = {
+  httpOnly: true,
+  secure: isProd, // true on Vercel
+  sameSite: isProd ? "none" : "lax", // required for cross-domain cookies
+};
+
+
+// generate tokens
 const generateAccessToken = (id) => {
   return jwt.sign(
     { id },
@@ -26,10 +38,11 @@ exports.signup = async (req, res) => {
 
     const exists = await User.findOne({ email });
 
-    if (exists)
+    if (exists) {
       return res.status(400).json({
         message: "User already exists"
       });
+    }
 
     const hashed = await bcrypt.hash(password, 10);
 
@@ -82,29 +95,12 @@ exports.login = async (req, res) => {
       });
     }
 
-    const accessToken = jwt.sign(
-      { id: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.ACCESS_TOKEN_EXPIRE }
-    );
+    const accessToken = generateAccessToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
 
-    const refreshToken = jwt.sign(
-      { id: user._id },
-      process.env.REFRESH_SECRET,
-      { expiresIn: process.env.REFRESH_TOKEN_EXPIRE }
-    );
-
-    res.cookie("accessToken", accessToken, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false,
-    });
-
-    res.cookie("refreshToken", refreshToken, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false,
-    });
+    // set cookies correctly for HTTPS production
+    res.cookie("accessToken", accessToken, cookieOptions);
+    res.cookie("refreshToken", refreshToken, cookieOptions);
 
     res.json({
       message: "Login successful",
@@ -125,29 +121,31 @@ exports.refreshToken = (req, res) => {
 
   const token = req.cookies.refreshToken;
 
-  if (!token)
+  if (!token) {
     return res.status(401).json({
       message: "No refresh token"
     });
+  }
 
   jwt.verify(
     token,
     process.env.REFRESH_SECRET,
     (err, user) => {
 
-      if (err)
+      if (err) {
         return res.status(403).json({
           message: "Invalid refresh token"
         });
+      }
 
       const newAccessToken =
         generateAccessToken(user.id);
 
-      res.cookie("accessToken", newAccessToken, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: false
-      });
+      res.cookie(
+        "accessToken",
+        newAccessToken,
+        cookieOptions
+      );
 
       res.json({
         message: "Token refreshed"
@@ -160,8 +158,8 @@ exports.refreshToken = (req, res) => {
 // LOGOUT
 exports.logout = (req, res) => {
 
-  res.clearCookie("accessToken");
-  res.clearCookie("refreshToken");
+  res.clearCookie("accessToken", cookieOptions);
+  res.clearCookie("refreshToken", cookieOptions);
 
   res.json({
     message: "Logged out"
