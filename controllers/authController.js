@@ -1,6 +1,7 @@
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { OAuth2Client } = require("google-auth-library");
 
 // detect production environment
 const isProd = process.env.NODE_ENV === "production";
@@ -11,6 +12,9 @@ const cookieOptions = {
   secure: isProd, // true on Vercel
   sameSite: isProd ? "none" : "lax", // required for cross-domain cookies
 };
+
+// Google OAuth client
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 
 // generate tokens
@@ -111,6 +115,66 @@ exports.login = async (req, res) => {
 
     res.status(500).json({
       message: "Server error during login",
+    });
+  }
+};
+
+
+// GOOGLE LOGIN
+exports.googleLogin = async (req, res) => {
+  try {
+    const { credential } = req.body;
+
+    if (!credential) {
+      return res.status(400).json({
+        message: "Missing Google credential",
+      });
+    }
+
+    // verify token from frontend
+    const ticket = await client.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+
+    const { email, name, picture } = payload;
+
+    if (!email) {
+      return res.status(400).json({
+        message: "Google authentication failed",
+      });
+    }
+
+    // check if user exists
+    let user = await User.findOne({ email });
+
+    // create account automatically if not exists
+    if (!user) {
+      user = await User.create({
+        email,
+        name,
+        avatar: picture,
+        provider: "google",
+      });
+    }
+
+    const accessToken = generateAccessToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+
+    res.cookie("accessToken", accessToken, cookieOptions);
+    res.cookie("refreshToken", refreshToken, cookieOptions);
+
+    res.json({
+      message: "Google login successful",
+    });
+
+  } catch (err) {
+    console.error("GOOGLE LOGIN ERROR:", err);
+
+    res.status(401).json({
+      message: "Google authentication failed",
     });
   }
 };
