@@ -249,3 +249,57 @@ exports.getMe = async (req, res) => {
     });
   }
 };
+
+// CHANGE PASSWORD
+exports.changePassword = async (req, res) => {
+  try {
+    const { email, oldPassword, newPassword } = req.body;
+
+    if (!email || !oldPassword || !newPassword) {
+      return res.status(400).json({
+        message: "Email, old password and new password required",
+      });
+    }
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    const isMatch = await bcrypt.compare(
+      oldPassword,
+      user.password
+    );
+
+    if (!isMatch) {
+      return res.status(400).json({
+        message: "Old password incorrect",
+      });
+    }
+
+    if (oldPassword === newPassword) {
+      return res.status(400).json({
+        message: "New password must be different",
+      });
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+
+    user.password = hashed;
+    await user.save();
+
+    res.json({
+      message: "Password updated successfully",
+    });
+
+  } catch (err) {
+    console.error("CHANGE PASSWORD ERROR:", err);
+
+    res.status(500).json({
+      message: "Server error",
+    });
+  }
+};
