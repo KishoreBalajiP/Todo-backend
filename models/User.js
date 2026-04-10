@@ -6,10 +6,18 @@ const userSchema = new mongoose.Schema({
     required: true,
     unique: true,
   },
+
   password: {
     type: String,
     required: true,
   },
+
+  // NEW FIELD: premium unlock flag
+  subscriptionActive: {
+    type: Boolean,
+    default: false,
+  }
+
 }, { timestamps: true });
 
 module.exports = mongoose.model("User", userSchema);

@@ -21,7 +21,7 @@ const allowedOrigins = [
 app.use(cors({
   origin: function (origin, callback) {
 
-    // allow server-to-server, Postman, curl etc
+    // allow Postman, curl, server-to-server
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.includes(origin)) {
@@ -36,7 +36,6 @@ app.use(cors({
 
 
 app.use(express.json());
-
 app.use(cookieParser());
 
 
@@ -53,5 +52,9 @@ app.use("/api/auth",
 app.use("/api/tasks",
   require("../routes/taskRoutes"));
 
+// NEW ROUTE (ADD THIS)
+app.use("/api/payment",
+  require("../routes/paymentRoutes"));
 
-module.exports = app; 
+
+module.exports = app;

@@ -1,4 +1,5 @@
 const Task = require("../models/Task");
+const User = require("../models/User");
 
 exports.getTasks = async (req, res) => {
   try {
@@ -6,7 +7,6 @@ exports.getTasks = async (req, res) => {
 
     let filter = { user: req.user };
 
-    // recurring filter
     if (recurring && recurring !== "all") {
       filter.recurring = recurring;
     }
@@ -16,46 +16,84 @@ exports.getTasks = async (req, res) => {
     res.json(tasks);
   } catch (err) {
     console.error("GET TASK ERROR:", err.message);
-    res.status(500).json({ message: "Server error while fetching tasks" });
+    res.status(500).json({
+      message: "Server error while fetching tasks",
+    });
   }
 };
 
+
 exports.createTask = async (req, res) => {
   try {
+
+    // GET USER
+    const user = await User.findById(req.user);
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    // COUNT EXISTING TASKS
+    const taskCount = await Task.countDocuments({
+      user: req.user,
+    });
+
+    // FREE PLAN LIMIT CHECK
+    if (!user.subscriptionActive && taskCount >= 5) {
+      return res.status(403).json({
+        message: "Free limit reached. Please upgrade to premium.",
+      });
+    }
+
     const task = await Task.create({
       ...req.body,
       user: req.user,
     });
 
     res.status(201).json(task);
+
   } catch (err) {
     console.error("CREATE TASK ERROR:", err.message);
-    res.status(500).json({ message: "Server error while creating task" });
+    res.status(500).json({
+      message: "Server error while creating task",
+    });
   }
 };
+
 
 exports.updateTask = async (req, res) => {
   try {
     const { completed } = req.body;
 
-    // get existing task first
     const existingTask = await Task.findById(req.params.id);
 
     if (!existingTask) {
-      return res.status(404).json({ message: "Task not found" });
+      return res.status(404).json({
+        message: "Task not found",
+      });
     }
 
-    // 🔥 WHEN TASK IS COMPLETED
+    // WHEN TASK COMPLETED
     if (completed === true) {
 
-      // 🧨 CASE 1 — NON RECURRING → DELETE
-      if (!existingTask.recurring || existingTask.recurring === "none") {
+      // NON-RECURRING TASK → DELETE
+      if (
+        !existingTask.recurring ||
+        existingTask.recurring === "none"
+      ) {
         await Task.findByIdAndDelete(existingTask._id);
-        return res.json({ message: "Task completed and removed" });
+
+        return res.json({
+          message: "Task completed and removed",
+        });
       }
 
-      // 🔁 CASE 2 — RECURRING → CREATE NEXT INSTANCE
-      let nextDate = new Date(existingTask.dueDate || new Date());
+      // RECURRING TASK → CREATE NEXT INSTANCE
+      let nextDate = new Date(
+        existingTask.dueDate || new Date()
+      );
 
       if (existingTask.recurring === "daily") {
         nextDate.setDate(nextDate.getDate() + 1);
@@ -69,10 +107,10 @@ exports.updateTask = async (req, res) => {
         nextDate.setMonth(nextDate.getMonth() + 1);
       }
 
-      // delete today's completed task
+      // DELETE CURRENT
       await Task.findByIdAndDelete(existingTask._id);
 
-      // create next occurrence
+      // CREATE NEXT OCCURRENCE
       const newTask = await Task.create({
         title: existingTask.title,
         description: existingTask.description,
@@ -85,34 +123,54 @@ exports.updateTask = async (req, res) => {
       return res.json(newTask);
     }
 
-    // NORMAL UPDATE (original behavior preserved)
-    const task = await Task.findByIdAndUpdate(req.params.id, req.body, {
-      returnDocument: "after",
-    });
+    // NORMAL UPDATE
+    const task = await Task.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      {
+        returnDocument: "after",
+      }
+    );
 
     if (!task) {
-      return res.status(404).json({ message: "Task not found" });
+      return res.status(404).json({
+        message: "Task not found",
+      });
     }
 
     res.json(task);
 
   } catch (err) {
     console.error("UPDATE TASK ERROR:", err.message);
-    res.status(500).json({ message: "Server error while updating task" });
+
+    res.status(500).json({
+      message: "Server error while updating task",
+    });
   }
 };
 
+
 exports.deleteTask = async (req, res) => {
   try {
-    const deleted = await Task.findByIdAndDelete(req.params.id);
+    const deleted = await Task.findByIdAndDelete(
+      req.params.id
+    );
 
     if (!deleted) {
-      return res.status(404).json({ message: "Task not found" });
+      return res.status(404).json({
+        message: "Task not found",
+      });
     }
 
-    res.json({ message: "Task deleted" });
+    res.json({
+      message: "Task deleted",
+    });
+
   } catch (err) {
     console.error("DELETE TASK ERROR:", err.message);
-    res.status(500).json({ message: "Server error while deleting task" });
+
+    res.status(500).json({
+      message: "Server error while deleting task",
+    });
   }
 };
