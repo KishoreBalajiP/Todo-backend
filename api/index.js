@@ -5,12 +5,16 @@ const cookieParser = require("cookie-parser");
 
 const connectDB = require("../config/db");
 
+// Redis connection import
+const { connectRedis } = require("../config/redis");
+
 dotenv.config();
 
+// Connect databases
 connectDB();
+connectRedis(); // connect Redis
 
 const app = express();
-
 
 // DYNAMIC CORS CONFIG
 const allowedOrigins = [
@@ -34,16 +38,13 @@ app.use(cors({
   credentials: true
 }));
 
-
 app.use(express.json());
 app.use(cookieParser());
-
 
 // TEST ROUTE
 app.get("/", (req, res) => {
   res.send("Server running successfully");
 });
-
 
 // ROUTES
 app.use("/api/auth",
@@ -52,9 +53,7 @@ app.use("/api/auth",
 app.use("/api/tasks",
   require("../routes/taskRoutes"));
 
-// NEW ROUTE (ADD THIS)
 app.use("/api/payment",
   require("../routes/paymentRoutes"));
-
 
 module.exports = app;

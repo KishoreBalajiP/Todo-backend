@@ -3,21 +3,23 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { OAuth2Client } = require("google-auth-library");
 
+// NEW: Redis import
+const { redisClient } = require("../config/redis");
+
 // detect production environment
 const isProd = process.env.NODE_ENV === "production";
 
 // shared cookie config
 const cookieOptions = {
   httpOnly: true,
-  secure: isProd, // true on Vercel
-  sameSite: isProd ? "none" : "lax", // required for cross-domain cookies
+  secure: isProd,
+  sameSite: isProd ? "none" : "lax",
 };
 
-// Google OAuth client
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 
-// generate tokens
+// TOKEN GENERATORS
 const generateAccessToken = (id) => {
   return jwt.sign(
     { id },
@@ -38,6 +40,7 @@ const generateRefreshToken = (id) => {
 // SIGNUP
 exports.signup = async (req, res) => {
   try {
+
     const { email, password } = req.body;
 
     const exists = await User.findOne({ email });
@@ -60,6 +63,7 @@ exports.signup = async (req, res) => {
     });
 
   } catch (err) {
+
     console.error("Signup error:", err.message);
 
     res.status(500).json({
@@ -72,6 +76,7 @@ exports.signup = async (req, res) => {
 // LOGIN
 exports.login = async (req, res) => {
   try {
+
     const { email, password } = req.body;
 
     if (!email || !password) {
@@ -102,7 +107,13 @@ exports.login = async (req, res) => {
     const accessToken = generateAccessToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
-    // set cookies correctly for HTTPS production
+    // STORE refresh token in Redis
+    await redisClient.set(
+      `refresh:${user._id}`,
+      refreshToken,
+      { EX: 7 * 24 * 60 * 60 }
+    );
+
     res.cookie("accessToken", accessToken, cookieOptions);
     res.cookie("refreshToken", refreshToken, cookieOptions);
 
@@ -111,6 +122,7 @@ exports.login = async (req, res) => {
     });
 
   } catch (err) {
+
     console.error("LOGIN ERROR:", err);
 
     res.status(500).json({
@@ -123,6 +135,7 @@ exports.login = async (req, res) => {
 // GOOGLE LOGIN
 exports.googleLogin = async (req, res) => {
   try {
+
     const { credential } = req.body;
 
     if (!credential) {
@@ -131,7 +144,6 @@ exports.googleLogin = async (req, res) => {
       });
     }
 
-    // verify token from frontend
     const ticket = await client.verifyIdToken({
       idToken: credential,
       audience: process.env.GOOGLE_CLIENT_ID,
@@ -147,10 +159,8 @@ exports.googleLogin = async (req, res) => {
       });
     }
 
-    // check if user exists
     let user = await User.findOne({ email });
 
-    // create account automatically if not exists
     if (!user) {
       user = await User.create({
         email,
@@ -163,6 +173,13 @@ exports.googleLogin = async (req, res) => {
     const accessToken = generateAccessToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
+    // STORE refresh token in Redis
+    await redisClient.set(
+      `refresh:${user._id}`,
+      refreshToken,
+      { EX: 7 * 24 * 60 * 60 }
+    );
+
     res.cookie("accessToken", accessToken, cookieOptions);
     res.cookie("refreshToken", refreshToken, cookieOptions);
 
@@ -171,6 +188,7 @@ exports.googleLogin = async (req, res) => {
     });
 
   } catch (err) {
+
     console.error("GOOGLE LOGIN ERROR:", err);
 
     res.status(401).json({
@@ -181,53 +199,93 @@ exports.googleLogin = async (req, res) => {
 
 
 // REFRESH TOKEN
-exports.refreshToken = (req, res) => {
+exports.refreshToken = async (req, res) => {
 
-  const token = req.cookies.refreshToken;
+  try {
 
-  if (!token) {
-    return res.status(401).json({
-      message: "No refresh token"
-    });
-  }
+    const token = req.cookies.refreshToken;
 
-  jwt.verify(
-    token,
-    process.env.REFRESH_SECRET,
-    (err, user) => {
-
-      if (err) {
-        return res.status(403).json({
-          message: "Invalid refresh token"
-        });
-      }
-
-      const newAccessToken =
-        generateAccessToken(user.id);
-
-      res.cookie(
-        "accessToken",
-        newAccessToken,
-        cookieOptions
-      );
-
-      res.json({
-        message: "Token refreshed"
+    if (!token) {
+      return res.status(401).json({
+        message: "No refresh token"
       });
     }
-  );
+
+    const decoded = jwt.verify(
+      token,
+      process.env.REFRESH_SECRET
+    );
+
+    const storedToken = await redisClient.get(
+      `refresh:${decoded.id}`
+    );
+
+    if (!storedToken || storedToken !== token) {
+      return res.status(403).json({
+        message: "Invalid refresh token"
+      });
+    }
+
+    const newAccessToken =
+      generateAccessToken(decoded.id);
+
+    res.cookie(
+      "accessToken",
+      newAccessToken,
+      cookieOptions
+    );
+
+    res.json({
+      message: "Token refreshed"
+    });
+
+  } catch {
+
+    res.status(403).json({
+      message: "Invalid refresh token"
+    });
+
+  }
 };
 
 
 // LOGOUT
-exports.logout = (req, res) => {
+exports.logout = async (req, res) => {
 
-  res.clearCookie("accessToken", cookieOptions);
-  res.clearCookie("refreshToken", cookieOptions);
+  try {
 
-  res.json({
-    message: "Logged out"
-  });
+    const accessToken = req.cookies.accessToken;
+
+    if (accessToken) {
+      await redisClient.set(
+        `blacklist:${accessToken}`,
+        "true",
+        { EX: 60 * 60 }
+      );
+    }
+
+    if (req.user) {
+      await redisClient.del(
+        `refresh:${req.user}`
+      );
+    }
+
+    res.clearCookie("accessToken", cookieOptions);
+    res.clearCookie("refreshToken", cookieOptions);
+
+    res.json({
+      message: "Logged out"
+    });
+
+  } catch (err) {
+
+    console.error("Logout error:", err);
+
+    res.status(500).json({
+      message: "Logout failed"
+    });
+
+  }
 };
 
 
@@ -250,9 +308,12 @@ exports.getMe = async (req, res) => {
   }
 };
 
+
 // CHANGE PASSWORD
 exports.changePassword = async (req, res) => {
+
   try {
+
     const { email, oldPassword, newPassword } = req.body;
 
     if (!email || !oldPassword || !newPassword) {
@@ -280,22 +341,26 @@ exports.changePassword = async (req, res) => {
       });
     }
 
-    if (oldPassword === newPassword) {
-      return res.status(400).json({
-        message: "New password must be different",
-      });
-    }
-
-    const hashed = await bcrypt.hash(newPassword, 10);
+    const hashed = await bcrypt.hash(
+      newPassword,
+      10
+    );
 
     user.password = hashed;
+
     await user.save();
+
+    // invalidate refresh token after password change
+    await redisClient.del(
+      `refresh:${user._id}`
+    );
 
     res.json({
       message: "Password updated successfully",
     });
 
   } catch (err) {
+
     console.error("CHANGE PASSWORD ERROR:", err);
 
     res.status(500).json({

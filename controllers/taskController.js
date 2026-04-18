@@ -1,9 +1,26 @@
 const Task = require("../models/Task");
 const User = require("../models/User");
 
+// NEW: Redis import
+const { redisClient } = require("../config/redis");
+
+
 exports.getTasks = async (req, res) => {
   try {
+
     const { recurring } = req.query;
+
+    const cacheKey =
+      recurring && recurring !== "all"
+        ? `tasks:${req.user}:${recurring}`
+        : `tasks:${req.user}:all`;
+
+    // CHECK CACHE FIRST
+    const cachedTasks = await redisClient.get(cacheKey);
+
+    if (cachedTasks) {
+      return res.json(JSON.parse(cachedTasks));
+    }
 
     let filter = { user: req.user };
 
@@ -11,14 +28,27 @@ exports.getTasks = async (req, res) => {
       filter.recurring = recurring;
     }
 
-    const tasks = await Task.find(filter).sort({ createdAt: -1 });
+    const tasks = await Task
+      .find(filter)
+      .sort({ createdAt: -1 });
+
+    // STORE IN CACHE (60 seconds)
+    await redisClient.set(
+      cacheKey,
+      JSON.stringify(tasks),
+      { EX: 60 }
+    );
 
     res.json(tasks);
+
   } catch (err) {
+
     console.error("GET TASK ERROR:", err.message);
+
     res.status(500).json({
       message: "Server error while fetching tasks",
     });
+
   }
 };
 
@@ -26,7 +56,6 @@ exports.getTasks = async (req, res) => {
 exports.createTask = async (req, res) => {
   try {
 
-    // GET USER
     const user = await User.findById(req.user);
 
     if (!user) {
@@ -35,12 +64,10 @@ exports.createTask = async (req, res) => {
       });
     }
 
-    // COUNT EXISTING TASKS
     const taskCount = await Task.countDocuments({
       user: req.user,
     });
 
-    // FREE PLAN LIMIT CHECK
     if (!user.subscriptionActive && taskCount >= 5) {
       return res.status(403).json({
         message: "Free limit reached. Please upgrade to premium.",
@@ -52,19 +79,29 @@ exports.createTask = async (req, res) => {
       user: req.user,
     });
 
+    // CLEAR CACHE AFTER CREATE
+    await redisClient.del(`tasks:${req.user}:all`);
+    await redisClient.del(`tasks:${req.user}:daily`);
+    await redisClient.del(`tasks:${req.user}:weekly`);
+    await redisClient.del(`tasks:${req.user}:monthly`);
+
     res.status(201).json(task);
 
   } catch (err) {
+
     console.error("CREATE TASK ERROR:", err.message);
+
     res.status(500).json({
       message: "Server error while creating task",
     });
+
   }
 };
 
 
 exports.updateTask = async (req, res) => {
   try {
+
     const { completed } = req.body;
 
     const existingTask = await Task.findById(req.params.id);
@@ -78,19 +115,21 @@ exports.updateTask = async (req, res) => {
     // WHEN TASK COMPLETED
     if (completed === true) {
 
-      // NON-RECURRING TASK → DELETE
       if (
         !existingTask.recurring ||
         existingTask.recurring === "none"
       ) {
+
         await Task.findByIdAndDelete(existingTask._id);
+
+        // CLEAR CACHE
+        await redisClient.del(`tasks:${req.user}:all`);
 
         return res.json({
           message: "Task completed and removed",
         });
       }
 
-      // RECURRING TASK → CREATE NEXT INSTANCE
       let nextDate = new Date(
         existingTask.dueDate || new Date()
       );
@@ -107,10 +146,8 @@ exports.updateTask = async (req, res) => {
         nextDate.setMonth(nextDate.getMonth() + 1);
       }
 
-      // DELETE CURRENT
       await Task.findByIdAndDelete(existingTask._id);
 
-      // CREATE NEXT OCCURRENCE
       const newTask = await Task.create({
         title: existingTask.title,
         description: existingTask.description,
@@ -120,10 +157,12 @@ exports.updateTask = async (req, res) => {
         user: existingTask.user,
       });
 
+      // CLEAR CACHE
+      await redisClient.del(`tasks:${req.user}:all`);
+
       return res.json(newTask);
     }
 
-    // NORMAL UPDATE
     const task = await Task.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -138,20 +177,26 @@ exports.updateTask = async (req, res) => {
       });
     }
 
+    // CLEAR CACHE
+    await redisClient.del(`tasks:${req.user}:all`);
+
     res.json(task);
 
   } catch (err) {
+
     console.error("UPDATE TASK ERROR:", err.message);
 
     res.status(500).json({
       message: "Server error while updating task",
     });
+
   }
 };
 
 
 exports.deleteTask = async (req, res) => {
   try {
+
     const deleted = await Task.findByIdAndDelete(
       req.params.id
     );
@@ -162,15 +207,20 @@ exports.deleteTask = async (req, res) => {
       });
     }
 
+    // CLEAR CACHE
+    await redisClient.del(`tasks:${req.user}:all`);
+
     res.json({
       message: "Task deleted",
     });
 
   } catch (err) {
+
     console.error("DELETE TASK ERROR:", err.message);
 
     res.status(500).json({
       message: "Server error while deleting task",
     });
+
   }
 };

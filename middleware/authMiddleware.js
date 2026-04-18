@@ -1,16 +1,32 @@
 const jwt = require("jsonwebtoken");
 
-module.exports = (req, res, next) => {
+// import Redis client
+const { redisClient } = require("../config/redis");
 
-  const token = req.cookies.accessToken;
-
-  if (!token)
-    return res.status(401).json({
-      message: "No token"
-    });
+module.exports = async (req, res, next) => {
 
   try {
 
+    const token = req.cookies.accessToken;
+
+    if (!token) {
+      return res.status(401).json({
+        message: "No token"
+      });
+    }
+
+    // check if token is blacklisted in Redis
+    const isBlacklisted = await redisClient.get(
+      `blacklist:${token}`
+    );
+
+    if (isBlacklisted) {
+      return res.status(401).json({
+        message: "Token expired"
+      });
+    }
+
+    // verify token normally
     const decoded = jwt.verify(
       token,
       process.env.JWT_SECRET
@@ -20,10 +36,11 @@ module.exports = (req, res, next) => {
 
     next();
 
-  } catch {
+  } catch (error) {
 
-    res.status(401).json({
+    return res.status(401).json({
       message: "Invalid token"
     });
+
   }
 };

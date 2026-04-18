@@ -2,6 +2,9 @@ const Razorpay = require("razorpay");
 const crypto = require("crypto");
 const User = require("../models/User");
 
+// NEW: Redis import
+const { redisClient } = require("../config/redis");
+
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET,
@@ -15,7 +18,7 @@ exports.createOrder = async (req, res) => {
     const options = {
       amount: 4900, // ₹49 (amount in paise)
       currency: "INR",
-      receipt: "premium_upgrade",
+      receipt: `premium_${req.user}`,
     };
 
     const order = await razorpay.orders.create(options);
@@ -34,6 +37,7 @@ exports.createOrder = async (req, res) => {
 };
 
 
+
 // VERIFY PAYMENT
 exports.verifyPayment = async (req, res) => {
 
@@ -46,6 +50,19 @@ exports.verifyPayment = async (req, res) => {
     } = req.body;
 
 
+    // PREVENT DOUBLE PROCESSING SAME PAYMENT
+    const existingPayment = await redisClient.get(
+      `payment:${razorpay_payment_id}`
+    );
+
+    if (existingPayment) {
+      return res.status(400).json({
+        message: "Payment already processed",
+      });
+    }
+
+
+    // VERIFY SIGNATURE
     const expectedSignature = crypto
       .createHmac(
         "sha256",
@@ -66,9 +83,26 @@ exports.verifyPayment = async (req, res) => {
     }
 
 
+    // ACTIVATE PREMIUM
     await User.findByIdAndUpdate(req.user, {
       subscriptionActive: true,
     });
+
+
+    // CACHE SUBSCRIPTION STATUS (FAST ACCESS)
+    await redisClient.set(
+      `subscription:${req.user}`,
+      "active",
+      { EX: 30 * 24 * 60 * 60 } // 30 days cache
+    );
+
+
+    // MARK PAYMENT AS USED (ANTI-REPLAY)
+    await redisClient.set(
+      `payment:${razorpay_payment_id}`,
+      "verified",
+      { EX: 30 * 24 * 60 * 60 }
+    );
 
 
     res.json({
