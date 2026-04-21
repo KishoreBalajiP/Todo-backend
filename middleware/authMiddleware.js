@@ -1,10 +1,8 @@
 const jwt = require("jsonwebtoken");
-
-// import Redis client
 const { redisClient } = require("../config/redis");
+const User = require("../models/User");
 
 module.exports = async (req, res, next) => {
-
   try {
 
     const token = req.cookies.accessToken;
@@ -15,7 +13,6 @@ module.exports = async (req, res, next) => {
       });
     }
 
-    // check if token is blacklisted in Redis
     const isBlacklisted = await redisClient.get(
       `blacklist:${token}`
     );
@@ -26,11 +23,18 @@ module.exports = async (req, res, next) => {
       });
     }
 
-    // verify token normally
     const decoded = jwt.verify(
       token,
       process.env.JWT_SECRET
     );
+
+    const userExists = await User.findById(decoded.id);
+
+    if (!userExists) {
+      return res.status(401).json({
+        message: "User no longer exists"
+      });
+    }
 
     req.user = decoded.id;
 

@@ -6,6 +6,10 @@ const { OAuth2Client } = require("google-auth-library");
 // NEW: Redis import
 const { redisClient } = require("../config/redis");
 
+// NEW: MFA imports
+const speakeasy = require("speakeasy");
+const QRCode = require("qrcode");
+
 // detect production environment
 const isProd = process.env.NODE_ENV === "production";
 
@@ -104,10 +108,17 @@ exports.login = async (req, res) => {
       });
     }
 
+    // MFA CHECK
+    if (user.mfaEnabled) {
+      return res.json({
+        mfaRequired: true,
+        userId: user._id
+      });
+    }
+
     const accessToken = generateAccessToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
-    // STORE refresh token in Redis
     await redisClient.set(
       `refresh:${user._id}`,
       refreshToken,
@@ -170,10 +181,17 @@ exports.googleLogin = async (req, res) => {
       });
     }
 
+    // MFA CHECK
+    if (user.mfaEnabled) {
+      return res.json({
+        mfaRequired: true,
+        userId: user._id
+      });
+    }
+
     const accessToken = generateAccessToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
-    // STORE refresh token in Redis
     await redisClient.set(
       `refresh:${user._id}`,
       refreshToken,
@@ -194,6 +212,136 @@ exports.googleLogin = async (req, res) => {
     res.status(401).json({
       message: "Google authentication failed",
     });
+  }
+};
+
+
+// GENERATE MFA QR
+exports.generateMfaSecret = async (req, res) => {
+  try {
+
+    const user = await User.findById(req.user);
+
+    const secret = speakeasy.generateSecret({
+      length: 20,
+      name: `SecureApp (${user.email})`,
+    });
+
+    user.mfaSecret = secret.base32;
+    await user.save();
+
+    const qrCode = await QRCode.toDataURL(secret.otpauth_url);
+
+    res.json({
+      qrCode,
+      message: "Scan QR with Google Authenticator"
+    });
+
+  } catch (err) {
+
+    console.error("MFA SECRET ERROR:", err);
+
+    res.status(500).json({
+      message: "Failed to generate MFA secret"
+    });
+
+  }
+};
+
+
+// VERIFY MFA SETUP
+exports.verifyMfaSetup = async (req, res) => {
+
+  try {
+
+    const { token } = req.body;
+
+    const user = await User.findById(req.user);
+
+    const verified = speakeasy.totp.verify({
+      secret: user.mfaSecret,
+      encoding: "base32",
+      token,
+      window: 1,
+    });
+
+    if (!verified) {
+      return res.status(400).json({
+        message: "Invalid verification code"
+      });
+    }
+
+    user.mfaEnabled = true;
+    await user.save();
+
+    res.json({
+      message: "MFA enabled successfully"
+    });
+
+  } catch (err) {
+
+    console.error("MFA VERIFY ERROR:", err);
+
+    res.status(500).json({
+      message: "Verification failed"
+    });
+
+  }
+};
+
+
+// VERIFY MFA LOGIN
+exports.verifyMfaLogin = async (req, res) => {
+
+  try {
+
+    const { userId, token } = req.body;
+
+    const user = await User.findById(userId);
+
+    if (!user || !user.mfaEnabled) {
+      return res.status(400).json({
+        message: "MFA not enabled"
+      });
+    }
+
+    const verified = speakeasy.totp.verify({
+      secret: user.mfaSecret,
+      encoding: "base32",
+      token,
+      window: 1,
+    });
+
+    if (!verified) {
+      return res.status(400).json({
+        message: "Invalid MFA code"
+      });
+    }
+
+    const accessToken = generateAccessToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+
+    await redisClient.set(
+      `refresh:${user._id}`,
+      refreshToken,
+      { EX: 7 * 24 * 60 * 60 }
+    );
+
+    res.cookie("accessToken", accessToken, cookieOptions);
+    res.cookie("refreshToken", refreshToken, cookieOptions);
+
+    res.json({
+      message: "Login successful"
+    });
+
+  } catch (err) {
+
+    console.error("MFA LOGIN ERROR:", err);
+
+    res.status(500).json({
+      message: "MFA verification failed"
+    });
+
   }
 };
 
@@ -350,7 +498,6 @@ exports.changePassword = async (req, res) => {
 
     await user.save();
 
-    // invalidate refresh token after password change
     await redisClient.del(
       `refresh:${user._id}`
     );
